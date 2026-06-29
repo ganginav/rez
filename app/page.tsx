@@ -6,6 +6,7 @@ import type {
   PipelineEvent,
   PipelineStage,
   TechStack,
+  UserRepo,
 } from "@/lib/types";
 
 type StageState = "idle" | "running" | "done" | "error";
@@ -40,6 +41,34 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<"" | "bullets" | "full">("");
   const runningStage = useRef<PipelineStage | null>(null);
+
+  // "Browse my repositories" picker state.
+  const [showRepos, setShowRepos] = useState(false);
+  const [myRepos, setMyRepos] = useState<UserRepo[] | null>(null);
+  const [reposLoading, setReposLoading] = useState(false);
+  const [reposError, setReposError] = useState<string | null>(null);
+  const [repoFilter, setRepoFilter] = useState("");
+
+  const loadRepos = useCallback(async () => {
+    setShowRepos((prev) => !prev);
+    // Only fetch once; subsequent toggles just show/hide the cached list.
+    if (myRepos !== null || reposLoading) return;
+    setReposLoading(true);
+    setReposError(null);
+    try {
+      const res = await fetch("/api/repos");
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setReposError(data.error ?? "Failed to load your repositories.");
+      } else {
+        setMyRepos(Array.isArray(data.repos) ? data.repos : []);
+      }
+    } catch {
+      setReposError("Could not reach the server. Is it running?");
+    } finally {
+      setReposLoading(false);
+    }
+  }, [myRepos, reposLoading]);
 
   const reset = useCallback(() => {
     setPhase("idle");
@@ -344,7 +373,74 @@ export default function Home() {
                   {ex}
                 </button>
               ))}
+              <button
+                type="button"
+                className="browse-toggle"
+                onClick={loadRepos}
+                aria-expanded={showRepos}
+              >
+                {showRepos ? "Hide my repositories" : "Browse my repositories →"}
+              </button>
             </div>
+
+            {showRepos && (
+              <div className="myrepos">
+                {reposLoading && <p className="myrepos-status">Loading your repositories…</p>}
+
+                {reposError && (
+                  <p className="myrepos-status myrepos-error">{reposError}</p>
+                )}
+
+                {!reposLoading && !reposError && myRepos && (
+                  myRepos.length === 0 ? (
+                    <p className="myrepos-status">No repositories found for this token.</p>
+                  ) : (
+                    <>
+                      <input
+                        className="repo-filter"
+                        value={repoFilter}
+                        onChange={(e) => setRepoFilter(e.target.value)}
+                        placeholder={`Filter ${myRepos.length} repositories…`}
+                        aria-label="Filter repositories"
+                        spellCheck={false}
+                      />
+                      <ul className="repo-list">
+                        {myRepos
+                          .filter((r) =>
+                            r.fullName.toLowerCase().includes(repoFilter.trim().toLowerCase()),
+                          )
+                          .map((r) => (
+                            <li key={r.fullName}>
+                              <button
+                                type="button"
+                                className="repo-row"
+                                onClick={() => {
+                                  setUrl(r.fullName);
+                                  analyze(r.fullName);
+                                }}
+                              >
+                                <span className="repo-row-main">
+                                  <span className="repo-row-name">
+                                    {r.fullName}
+                                    {r.private && <span className="badge-private">Private</span>}
+                                  </span>
+                                  {r.description && (
+                                    <span className="repo-row-desc">{r.description}</span>
+                                  )}
+                                </span>
+                                <span className="repo-row-meta">
+                                  {r.language && <span>{r.language}</span>}
+                                  <span>★ {formatCount(r.stars)}</span>
+                                </span>
+                              </button>
+                            </li>
+                          ))}
+                      </ul>
+                    </>
+                  )
+                )}
+              </div>
+            )}
           </div>
         </div>
       </section>
@@ -377,8 +473,8 @@ function Footer() {
   return (
     <footer className="footer">
       <div className="wrap">
-        Public repos work without auth. Add a <code>GITHUB_TOKEN</code> to raise the rate limit and,
-        later, unlock private repos.
+        Public repos work without auth. With a <code>GITHUB_TOKEN</code> you get a higher rate limit,
+        can browse your own repositories, and can analyze your private ones.
       </div>
     </footer>
   );

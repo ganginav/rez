@@ -5,6 +5,18 @@ export interface RepoRef {
   repo: string;
 }
 
+// A repository the authenticated user can access (for the "browse my repos" picker).
+export interface UserRepo {
+  owner: string;
+  repo: string;
+  fullName: string; // "owner/repo"
+  description: string | null;
+  private: boolean;
+  stars: number;
+  language: string | null;
+  updatedAt: string;
+}
+
 export interface RepoMeta {
   owner: string;
   repo: string;

@@ -1,7 +1,7 @@
 // GitHub REST API v3 data layer. Public repos need no auth (60 req/hr per IP);
 // an optional token raises the limit to 5,000 req/hr.
 
-import type { RepoMeta } from "./types";
+import type { RepoMeta, UserRepo } from "./types";
 
 const API = "https://api.github.com";
 
@@ -68,6 +68,35 @@ export async function getRepoMeta(owner: string, repo: string, token?: string): 
     license: data.license?.spdx_id ?? data.license?.name ?? null,
     defaultBranch: data.default_branch ?? "HEAD",
   };
+}
+
+/**
+ * List repositories the authenticated user can access (owned, collaborator, or org member).
+ * Requires a token; with the `repo` scope this includes private repos. Sorted most-recent first.
+ */
+export async function getUserRepos(token: string): Promise<UserRepo[]> {
+  const res = await ghFetch(
+    "/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member",
+    token,
+  );
+  const data = await res.json();
+  if (!Array.isArray(data)) return [];
+  return data
+    .map((r: Record<string, unknown>): UserRepo => {
+      const owner = (r.owner as { login?: string })?.login ?? "";
+      const repo = (r.name as string) ?? "";
+      return {
+        owner,
+        repo,
+        fullName: (r.full_name as string) ?? `${owner}/${repo}`,
+        description: (r.description as string) ?? null,
+        private: Boolean(r.private),
+        stars: (r.stargazers_count as number) ?? 0,
+        language: (r.language as string) ?? null,
+        updatedAt: (r.updated_at as string) ?? (r.pushed_at as string) ?? "",
+      };
+    })
+    .filter((r) => r.owner && r.repo);
 }
 
 export async function getLanguages(
