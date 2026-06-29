@@ -685,6 +685,115 @@ h1.title {
   font-size: 14.5px;
 }
 
+/* ---------- Follow-up Q&A ---------- */
+.followup {
+  display: grid;
+  gap: 18px;
+}
+
+.fu-thread {
+  display: grid;
+  gap: 16px;
+}
+
+.fu-turn {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 16px 18px;
+}
+
+.fu-q {
+  font-weight: 600;
+  font-size: 15px;
+  margin: 0 0 10px;
+  padding-left: 14px;
+  border-left: 3px solid var(--accent);
+}
+
+.fu-a {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+
+.fu-thinking {
+  color: var(--faint);
+  font-style: italic;
+}
+
+.fu-files {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+.fu-files-list {
+  color: var(--accent-ink);
+}
+
+.fu-error {
+  margin: 0;
+  color: var(--err);
+  font-size: 14px;
+}
+
+.fu-form {
+  display: grid;
+  gap: 10px;
+}
+
+.fu-modes {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  width: fit-content;
+}
+
+.fu-mode {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 7px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.fu-mode:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.fu-mode[data-active="true"] {
+  background: var(--bg);
+  color: var(--accent-ink);
+  box-shadow: var(--shadow);
+}
+
+.fu-mode:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.fu-input-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.fu-hint {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--faint);
+}
+
 /* ---------- Footer ---------- */
 .footer {
   margin-top: auto;

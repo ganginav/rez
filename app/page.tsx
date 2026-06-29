@@ -3,6 +3,9 @@
 import { useCallback, useRef, useState } from "react";
 import type {
   AnalysisResult,
+  FollowupEvent,
+  FollowupMode,
+  FollowupTurn,
   PipelineEvent,
   PipelineStage,
   TechStack,
@@ -19,6 +22,24 @@ const STAGES: { key: PipelineStage; name: string; desc: string }[] = [
 ];
 
 const EXAMPLES = ["facebook/react", "vercel/next.js", "tiangolo/fastapi"];
+
+const FOLLOWUP_MODES: { key: FollowupMode; label: string; hint: string }[] = [
+  {
+    key: "auto",
+    label: "Auto",
+    hint: "Auto — answers from the analysis, and reads more files only if it decides it needs to.",
+  },
+  {
+    key: "light",
+    label: "Light",
+    hint: "Light — answers from what was already gathered. Fastest, no extra file reads.",
+  },
+  {
+    key: "deep",
+    label: "Deep",
+    hint: "Deep — pulls in the most relevant unread files before answering. Slower, more thorough.",
+  },
+];
 
 const STACK_LABELS: { key: keyof TechStack; label: string }[] = [
   { key: "languages", label: "Languages" },
@@ -41,6 +62,17 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<"" | "bullets" | "full">("");
   const runningStage = useRef<PipelineStage | null>(null);
+
+  // Follow-up Q&A state.
+  const [thread, setThread] = useState<FollowupTurn[]>([]);
+  const [followupQ, setFollowupQ] = useState("");
+  const [followupMode, setFollowupMode] = useState<FollowupMode>("auto");
+  const [followupBusy, setFollowupBusy] = useState(false);
+  const [pendingQ, setPendingQ] = useState("");
+  const [streamingAnswer, setStreamingAnswer] = useState("");
+  const [followupStatus, setFollowupStatus] = useState("");
+  const [followupFiles, setFollowupFiles] = useState<string[]>([]);
+  const [followupError, setFollowupError] = useState<string | null>(null);
 
   // "Browse my repositories" picker state.
   const [showRepos, setShowRepos] = useState(false);
@@ -70,6 +102,17 @@ export default function Home() {
     }
   }, [myRepos, reposLoading]);
 
+  const resetFollowup = useCallback(() => {
+    setThread([]);
+    setFollowupQ("");
+    setFollowupBusy(false);
+    setPendingQ("");
+    setStreamingAnswer("");
+    setFollowupStatus("");
+    setFollowupFiles([]);
+    setFollowupError(null);
+  }, []);
+
   const reset = useCallback(() => {
     setPhase("idle");
     setStages({ scout: "idle", analyst: "idle", writer: "idle" });
@@ -78,7 +121,8 @@ export default function Home() {
     setError(null);
     setCopied("");
     runningStage.current = null;
-  }, []);
+    resetFollowup();
+  }, [resetFollowup]);
 
   const handleEvent = useCallback((event: PipelineEvent) => {
     if (event.type === "stage") {
@@ -110,6 +154,7 @@ export default function Home() {
       setError(null);
       setCopied("");
       runningStage.current = null;
+      resetFollowup();
 
       try {
         const res = await fetch("/api/analyze", {
@@ -151,13 +196,99 @@ export default function Home() {
         setPhase("error");
       }
     },
-    [handleEvent],
+    [handleEvent, resetFollowup],
   );
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     analyze(url);
   };
+
+  const askFollowup = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      const question = followupQ.trim();
+      if (!question || followupBusy || !result) return;
+
+      setFollowupBusy(true);
+      setFollowupError(null);
+      setFollowupStatus("");
+      setFollowupFiles([]);
+      setStreamingAnswer("");
+      setPendingQ(question);
+      setFollowupQ("");
+
+      let answer = "";
+      let errored = false;
+      try {
+        const res = await fetch("/api/followup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            context: result.context,
+            question,
+            mode: followupMode,
+            thread,
+          }),
+        });
+
+        if (!res.ok || !res.body) {
+          const data = await res.json().catch(() => ({ error: "Request failed." }));
+          setFollowupError(data.error ?? "Request failed.");
+          setFollowupBusy(false);
+          setPendingQ("");
+          return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          let nl: number;
+          while ((nl = buffer.indexOf("\n")) !== -1) {
+            const line = buffer.slice(0, nl).trim();
+            buffer = buffer.slice(nl + 1);
+            if (!line) continue;
+            let event: FollowupEvent;
+            try {
+              event = JSON.parse(line) as FollowupEvent;
+            } catch {
+              continue;
+            }
+            if (event.type === "status") {
+              setFollowupStatus(event.text);
+            } else if (event.type === "files") {
+              setFollowupFiles(event.files);
+            } else if (event.type === "delta") {
+              answer += event.text;
+              setStreamingAnswer(answer);
+            } else if (event.type === "error") {
+              errored = true;
+              setFollowupError(event.error);
+            }
+          }
+        }
+
+        if (answer.trim() && !errored) {
+          setThread((prev) => [...prev, { question, answer }]);
+        }
+      } catch {
+        setFollowupError("Lost connection to the server. Please try again.");
+      } finally {
+        setFollowupBusy(false);
+        setFollowupStatus("");
+        setFollowupFiles([]);
+        setStreamingAnswer("");
+        setPendingQ("");
+      }
+    },
+    [followupQ, followupBusy, followupMode, thread, result],
+  );
 
   const copy = async (kind: "bullets" | "full") => {
     if (!result) return;
@@ -274,6 +405,72 @@ export default function Home() {
               <p className="empty">No matching roles were generated.</p>
             )}
           </Section>
+
+          <Section num="06" title="Ask about this repo">
+            <div className="followup">
+              {(thread.length > 0 || followupBusy) && (
+                <div className="fu-thread">
+                  {thread.map((t, i) => (
+                    <div className="fu-turn" key={i}>
+                      <p className="fu-q">{t.question}</p>
+                      <div className="fu-a">{t.answer}</div>
+                    </div>
+                  ))}
+
+                  {followupBusy && (
+                    <div className="fu-turn">
+                      <p className="fu-q">{pendingQ}</p>
+                      {followupFiles.length > 0 && (
+                        <p className="fu-files">
+                          Read {followupFiles.length} file{followupFiles.length === 1 ? "" : "s"}:{" "}
+                          <span className="fu-files-list">{followupFiles.join(", ")}</span>
+                        </p>
+                      )}
+                      <div className="fu-a">
+                        {streamingAnswer || (
+                          <span className="fu-thinking">{followupStatus || "Thinking…"}</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {followupError && <p className="fu-error">{followupError}</p>}
+
+              <form className="fu-form" onSubmit={askFollowup}>
+                <div className="fu-modes" role="group" aria-label="Search depth">
+                  {FOLLOWUP_MODES.map((m) => (
+                    <button
+                      type="button"
+                      key={m.key}
+                      className="fu-mode"
+                      data-active={followupMode === m.key}
+                      onClick={() => setFollowupMode(m.key)}
+                      disabled={followupBusy}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="fu-input-row">
+                  <input
+                    className="input"
+                    value={followupQ}
+                    onChange={(e) => setFollowupQ(e.target.value)}
+                    placeholder="e.g. Why this architecture? How does auth work? What would you improve?"
+                    aria-label="Follow-up question"
+                    disabled={followupBusy}
+                    spellCheck={false}
+                  />
+                  <button className="btn" type="submit" disabled={followupBusy || !followupQ.trim()}>
+                    {followupBusy ? "Asking…" : "Ask"}
+                  </button>
+                </div>
+                <p className="fu-hint">{FOLLOWUP_MODES.find((m) => m.key === followupMode)?.hint}</p>
+              </form>
+            </div>
+          </Section>
         </main>
 
         <Footer />
@@ -333,12 +530,13 @@ export default function Home() {
           <div className="hero-inner">
             <span className="eyebrow">Repo → Resume</span>
             <h1 className="title">
-              Turn a GitHub repo into <span className="mark">resume-ready</span> proof of your work.
+              Understand any GitHub repo — and turn it into{" "}
+              <span className="mark">resume-ready</span> proof of your work.
             </h1>
             <p className="subtitle">
-              Paste a repository URL. A three-agent pipeline reads the code and metadata, then writes
-              a project summary, resume bullets, interview talking points, a grouped tech stack, and
-              matching job titles.
+              Paste a repository URL. A three-agent pipeline reads the code and metadata to produce a
+              project summary, resume bullets, interview talking points, a grouped tech stack, and
+              matching roles — then ask follow-up questions to dig into how it actually works.
             </p>
 
             <form className="form" onSubmit={onSubmit}>

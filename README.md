@@ -1,15 +1,16 @@
 # Rez
 
-> **Repo → Resume.** Turn any public GitHub repository into a resume-ready career profile.
+> **Repo → Resume.** Read and understand any GitHub repository — then turn it into a resume-ready career profile.
 
 ![Next.js](https://img.shields.io/badge/Next.js-App%20Router-black?logo=next.js)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?logo=typescript&logoColor=white)
 ![Claude](https://img.shields.io/badge/Claude-Anthropic-orange)
 
-Rez analyzes a public GitHub repository and generates a complete, resume-ready career
-profile — project summary, resume bullets, interview talking points, a grouped tech stack,
-and matching job titles. It's powered by a three-agent pipeline that pulls data from the
-GitHub REST API and uses Claude for synthesis.
+Rez analyzes a GitHub repository and generates a complete career profile — project summary,
+resume bullets, interview talking points, a grouped tech stack, and matching job titles. It's
+powered by a three-agent pipeline that pulls data from the GitHub REST API and uses Claude for
+synthesis. Once the analysis is done, it doubles as a **repo reader**: ask follow-up questions
+to understand how the code works, why it's built that way, and what you'd improve.
 
 ## Features
 
@@ -17,6 +18,7 @@ GitHub REST API and uses Claude for synthesis.
 - 🗣️ **Interview talking points** — prompts to help you speak confidently about the project.
 - 🧱 **Grouped tech stack** — languages, frameworks, and tools, organized by category.
 - 🎯 **Matching job titles** — roles the project's skills map to.
+- 💬 **Ask follow-up questions** — interrogate the repo after analysis (architecture, trade-offs, "how does X work?") with **Auto / Light / Deep** depth that reads more source files only when needed.
 - 📂 **Browse your own repos** — with a GitHub token set, list and pick from your repositories (public _and_ private) instead of pasting a URL.
 - 🔴 **Live pipeline progress** — per-stage status (Scout → Analyst → Writer) streamed to the UI.
 - 🔑 **Server-side keys** — your Anthropic and GitHub tokens never reach the browser.
@@ -42,6 +44,12 @@ Agent 3 — Career Writer   synthesize → summary, bullets, talking points, sta
 Each agent is a single Claude call with a focused system prompt. The server endpoint runs all
 three and **streams** per-stage progress as NDJSON back to the UI, so the pipeline indicator
 shows real status while you wait.
+
+After the pipeline finishes you can **ask follow-up questions** about the repo. Each question
+runs against the analysis and streams its answer back token-by-token. In **Auto** mode a quick
+judging step decides whether the existing context is enough and reads additional source files
+on demand; **Light** never reads more files, **Deep** always pulls in the most relevant unread
+ones. Follow-ups are threaded, so each question can build on the last.
 
 ## Tech stack
 
@@ -105,19 +113,21 @@ npm run typecheck  # type-check without emitting
    - **Browse my repositories** — with a `GITHUB_TOKEN` set, click the toggle to list your repos (public and private), filter, and select one.
 3. Watch the **Scout → Analyst → Writer** pipeline run in real time.
 4. Copy or export the generated summary, bullets, talking points, tech stack, and job titles.
+5. **Ask follow-ups** — use the _Ask about this repo_ box to dig deeper. Pick **Auto** (reads more files only if needed), **Light** (context only, fastest), or **Deep** (always reads the most relevant files).
 
 ## Project structure
 
 ```
 app/
-  page.tsx              5-section UI + pipeline indicator + repo picker + copy/export
-  api/analyze/route.ts  runs all three agents, streams NDJSON progress
-  api/repos/route.ts    lists the authenticated user's repos (server-side token)
+  page.tsx               UI: pipeline, results, repo picker, follow-up Q&A
+  api/analyze/route.ts   runs all three agents, streams NDJSON progress
+  api/repos/route.ts     lists the authenticated user's repos (server-side token)
+  api/followup/route.ts  answers follow-up questions (Auto/Light/Deep), streams the reply
 lib/
-  parse.ts              URL parser (full URLs, .git, trailing paths, owner/repo, SSH)
-  github.ts             GitHub data layer (6 endpoints) + error handling
-  agents.ts             the three agents, file sampling, JSON-with-fallback helper
-  types.ts              shared types
+  parse.ts               URL parser (full URLs, .git, trailing paths, owner/repo, SSH)
+  github.ts              GitHub data layer (6 endpoints) + error handling
+  agents.ts              the three agents + follow-up judge/answer; file sampling
+  types.ts               shared types
 ```
 
 ## GitHub endpoints used

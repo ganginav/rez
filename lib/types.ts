@@ -78,10 +78,41 @@ export interface CareerProfile {
   jobTitles: JobTitle[];
 }
 
+// Everything a follow-up question needs to be answered, carried from the
+// analysis to the client and passed back to /api/followup.
+export interface FollowupContext {
+  owner: string;
+  repo: string;
+  defaultBranch: string;
+  scout: ScoutSummary;
+  report: AnalystReport;
+  summary: string; // the generated profile summary
+  sampledFiles: string[]; // file paths the Analyst already read
+}
+
 export interface AnalysisResult {
   repo: { owner: string; repo: string; stars: number; forks: number };
   profile: CareerProfile;
+  context: FollowupContext;
 }
+
+// ---- Follow-up Q&A ----
+// "light" never reads more files; "deep" always pulls in the most relevant
+// unread files; "auto" reads more only if it judges the context insufficient.
+export type FollowupMode = "auto" | "light" | "deep";
+
+export interface FollowupTurn {
+  question: string;
+  answer: string;
+}
+
+// Streamed events (NDJSON) from /api/followup.
+export type FollowupEvent =
+  | { type: "status"; text: string }
+  | { type: "files"; files: string[] }
+  | { type: "delta"; text: string }
+  | { type: "done" }
+  | { type: "error"; error: string };
 
 // Streamed pipeline events (NDJSON) from /api/analyze.
 export type PipelineStage = "scout" | "analyst" | "writer";

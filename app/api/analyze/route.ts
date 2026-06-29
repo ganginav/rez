@@ -90,6 +90,15 @@ export async function POST(req: Request): Promise<Response> {
         const result: AnalysisResult = {
           repo: { owner: meta.owner, repo: meta.repo, stars: meta.stars, forks: meta.forks },
           profile,
+          context: {
+            owner: meta.owner,
+            repo: meta.repo,
+            defaultBranch: meta.defaultBranch,
+            scout,
+            report,
+            summary: profile.summary,
+            sampledFiles,
+          },
         };
         send({ type: "result", result });
       } catch (err) {

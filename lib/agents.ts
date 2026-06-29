@@ -5,6 +5,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import type {
   AnalystReport,
   CareerProfile,
+  FollowupContext,
+  FollowupTurn,
   ScoutSummary,
 } from "./types";
 import { getFileContent, getTree, type TreeEntry } from "./github";
@@ -217,6 +219,133 @@ ${filesBlock}`;
   });
 
   return { report, sampledFiles: snippets.map((s) => s.path) };
+}
+
+// ---------------------------------------------------------------------------
+// Follow-up Q&A — judge which files to read, then answer (streamed)
+// ---------------------------------------------------------------------------
+
+// File extensions worth offering to the judge as candidate reads.
+const CODE_FILE_RE =
+  /\.(js|jsx|ts|tsx|py|go|rs|java|rb|cs|php|c|cc|cpp|h|hpp|kt|swift|scala|sql|prisma|graphql|sh|ya?ml|toml|json|md)$/i;
+
+/**
+ * Files the follow-up judge may choose from: code/config files not already
+ * sampled, shallowest first (more architecturally central), capped so the
+ * candidate list stays small enough to send to the model.
+ */
+export function candidateFiles(tree: TreeEntry[], exclude: string[], limit = 300): string[] {
+  const ex = new Set(exclude);
+  return tree
+    .map((e) => e.path)
+    .filter((p) => !ex.has(p) && CODE_FILE_RE.test(p) && !p.includes("node_modules/"))
+    .sort((a, b) => a.split("/").length - b.split("/").length)
+    .slice(0, limit);
+}
+
+/**
+ * Decide whether the existing analysis already answers the question and, if
+ * not, which unread files would help most. Returns paths drawn ONLY from the
+ * candidate list (hallucinated paths are filtered out).
+ */
+export async function judgeFilesToFetch(input: {
+  context: FollowupContext;
+  question: string;
+  candidatePaths: string[];
+  limit?: number;
+}): Promise<{ enoughContext: boolean; files: string[] }> {
+  const limit = input.limit ?? 10;
+  if (input.candidatePaths.length === 0) return { enoughContext: true, files: [] };
+
+  const system = `You decide which additional source files (if any) are needed to answer a question about a GitHub repository.
+You already have a structured analysis and a list of files that were already read.
+Return ONLY a JSON object — no markdown, no code fences — with exactly:
+{ "enoughContext": boolean, "files": string[] }
+- "enoughContext": true if the existing analysis already answers the question well; false if reading more files would materially help.
+- "files": the paths MOST relevant to the question, chosen ONLY from the candidate list, ranked best first, at most ${limit}. Return [] if none would help.
+Never invent paths that are not in the candidate list.`;
+
+  const user = `QUESTION: ${input.question}
+
+EXISTING ANALYSIS:
+${JSON.stringify(input.context.report, null, 2)}
+
+ALREADY READ: ${input.context.sampledFiles.join(", ") || "(none)"}
+
+CANDIDATE FILES (choose only from these):
+${input.candidatePaths.join("\n")}`;
+
+  const res = await callClaudeJSON<{ enoughContext?: boolean; files?: unknown }>({
+    system,
+    user,
+    maxTokens: 512,
+    fallback: { enoughContext: true, files: [] },
+  });
+
+  const allowed = new Set(input.candidatePaths);
+  const files = Array.isArray(res.files)
+    ? (res.files.filter((f): f is string => typeof f === "string" && allowed.has(f))).slice(0, limit)
+    : [];
+  return { enoughContext: res.enoughContext !== false, files };
+}
+
+/**
+ * Answer a follow-up question about the repo, streaming text via `onText`.
+ * The static analysis lives in the system prompt; prior turns are replayed as
+ * conversation so the thread has memory; any freshly-read files are attached
+ * to the current question.
+ */
+export async function answerFollowup(input: {
+  context: FollowupContext;
+  thread: FollowupTurn[];
+  question: string;
+  extraFiles: { path: string; content: string }[];
+  onText: (text: string) => void;
+}): Promise<void> {
+  const { context, thread, question, extraFiles } = input;
+
+  const system = `You are a senior engineer helping a developer deeply understand a GitHub repository — so they can explain it, evaluate trade-offs, or prepare to talk about it in an interview.
+You are given a structured analysis of the repo and sometimes additional source-file snippets.
+Answer directly and concretely, grounded ONLY in the provided evidence. When the evidence doesn't cover something, say so plainly rather than inventing details.
+Explain the "why" and trade-offs when they're relevant. Keep answers focused and conversational; short paragraphs or bullet points are fine. Do not return JSON.
+
+REPOSITORY: ${context.owner}/${context.repo}
+PROJECT SUMMARY: ${context.summary || "(none)"}
+
+SCOUT SUMMARY:
+${JSON.stringify(context.scout, null, 2)}
+
+CODE ANALYSIS:
+${JSON.stringify(context.report, null, 2)}
+
+FILES ALREADY SAMPLED: ${context.sampledFiles.join(", ") || "(none)"}`;
+
+  const filesBlock = extraFiles.length
+    ? `\n\nADDITIONAL SOURCE FILES (each truncated):\n${extraFiles
+        .map((f) => `--- ${f.path} ---\n${f.content}`)
+        .join("\n\n")}`
+    : "";
+
+  const messages: Anthropic.MessageParam[] = [];
+  for (const t of thread) {
+    messages.push({ role: "user", content: t.question });
+    messages.push({ role: "assistant", content: t.answer });
+  }
+  messages.push({ role: "user", content: `${question}${filesBlock}` });
+
+  const stream = await client().messages.create({
+    model: MODEL,
+    max_tokens: 1024,
+    system,
+    messages,
+    stream: true,
+  });
+
+  for await (const event of stream) {
+    if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+      input.onText(event.delta.text);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
