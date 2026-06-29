@@ -1,0 +1,441 @@
+"use client";
+
+import { useCallback, useRef, useState } from "react";
+import type {
+  AnalysisResult,
+  PipelineEvent,
+  PipelineStage,
+  TechStack,
+} from "@/lib/types";
+
+type StageState = "idle" | "running" | "done" | "error";
+type Phase = "idle" | "running" | "done" | "error";
+
+const STAGES: { key: PipelineStage; name: string; desc: string }[] = [
+  { key: "scout", name: "Repo Scout", desc: "Reading metadata, languages & README" },
+  { key: "analyst", name: "Code Analyst", desc: "Sampling key files for tech signals" },
+  { key: "writer", name: "Career Writer", desc: "Composing your profile" },
+];
+
+const EXAMPLES = ["facebook/react", "vercel/next.js", "tiangolo/fastapi"];
+
+const STACK_LABELS: { key: keyof TechStack; label: string }[] = [
+  { key: "languages", label: "Languages" },
+  { key: "frameworks", label: "Frameworks" },
+  { key: "databases", label: "Databases" },
+  { key: "infrastructure", label: "Infrastructure" },
+  { key: "testing", label: "Testing" },
+];
+
+export default function Home() {
+  const [url, setUrl] = useState("");
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [stages, setStages] = useState<Record<PipelineStage, StageState>>({
+    scout: "idle",
+    analyst: "idle",
+    writer: "idle",
+  });
+  const [details, setDetails] = useState<Partial<Record<PipelineStage, string>>>({});
+  const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState<"" | "bullets" | "full">("");
+  const runningStage = useRef<PipelineStage | null>(null);
+
+  const reset = useCallback(() => {
+    setPhase("idle");
+    setStages({ scout: "idle", analyst: "idle", writer: "idle" });
+    setDetails({});
+    setResult(null);
+    setError(null);
+    setCopied("");
+    runningStage.current = null;
+  }, []);
+
+  const handleEvent = useCallback((event: PipelineEvent) => {
+    if (event.type === "stage") {
+      if (event.status === "running") runningStage.current = event.stage;
+      setStages((prev) => ({ ...prev, [event.stage]: event.status }));
+      if (event.detail) setDetails((prev) => ({ ...prev, [event.stage]: event.detail }));
+    } else if (event.type === "result") {
+      setResult(event.result);
+      setPhase("done");
+    } else if (event.type === "error") {
+      if (runningStage.current) {
+        const stage = runningStage.current;
+        setStages((prev) => ({ ...prev, [stage]: "error" }));
+      }
+      setError(event.error);
+      setPhase("error");
+    }
+  }, []);
+
+  const analyze = useCallback(
+    async (target: string) => {
+      const trimmed = target.trim();
+      if (!trimmed) return;
+
+      setPhase("running");
+      setStages({ scout: "idle", analyst: "idle", writer: "idle" });
+      setDetails({});
+      setResult(null);
+      setError(null);
+      setCopied("");
+      runningStage.current = null;
+
+      try {
+        const res = await fetch("/api/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: trimmed }),
+        });
+
+        if (!res.ok || !res.body) {
+          const data = await res.json().catch(() => ({ error: "Request failed." }));
+          setError(data.error ?? "Request failed.");
+          setPhase("error");
+          return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          let nl: number;
+          while ((nl = buffer.indexOf("\n")) !== -1) {
+            const line = buffer.slice(0, nl).trim();
+            buffer = buffer.slice(nl + 1);
+            if (!line) continue;
+            try {
+              handleEvent(JSON.parse(line) as PipelineEvent);
+            } catch {
+              // Ignore malformed lines; the stream continues.
+            }
+          }
+        }
+      } catch {
+        setError("Lost connection to the server. Please try again.");
+        setPhase("error");
+      }
+    },
+    [handleEvent],
+  );
+
+  const onSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    analyze(url);
+  };
+
+  const copy = async (kind: "bullets" | "full") => {
+    if (!result) return;
+    const text = kind === "bullets" ? bulletsText(result) : fullText(result);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(kind);
+      setTimeout(() => setCopied(""), 1800);
+    } catch {
+      // Clipboard may be unavailable (e.g. insecure context); fail quietly.
+    }
+  };
+
+  // ---- Result view ----
+  if (phase === "done" && result) {
+    const p = result.profile;
+    const stackEntries = STACK_LABELS.filter(({ key }) => p.techStack[key].length > 0);
+
+    return (
+      <div className="page">
+        <div className="resultbar">
+          <div className="wrap resultbar-inner">
+            <span className="repo-id">
+              {result.repo.owner}
+              <span className="slash">/</span>
+              {result.repo.repo}
+            </span>
+            <span className="metrics">
+              <span>★ {formatCount(result.repo.stars)}</span>
+              <span>⑂ {formatCount(result.repo.forks)}</span>
+            </span>
+            <div className="bar-actions">
+              <button className="btn-ghost" onClick={() => copy("bullets")}>
+                {copied === "bullets" ? "Copied ✓" : "Copy resume bullets"}
+              </button>
+              <button className="btn-ghost" onClick={() => copy("full")}>
+                {copied === "full" ? "Copied ✓" : "Copy full profile"}
+              </button>
+              <button className="btn-ghost" onClick={reset}>
+                Analyze another
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <main className="wrap results">
+          <Section num="01" title="Project summary">
+            {p.summary ? (
+              <p className="summary-text">{p.summary}</p>
+            ) : (
+              <p className="empty">No summary was generated.</p>
+            )}
+          </Section>
+
+          <Section num="02" title="Resume bullets">
+            {p.bullets.length > 0 ? (
+              <ul className="bullets">
+                {p.bullets.map((b, i) => (
+                  <li key={i}>{b}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="empty">No bullets were generated.</p>
+            )}
+          </Section>
+
+          <Section num="03" title="Interview talking points">
+            {p.talkingPoints.length > 0 ? (
+              <div className="qa">
+                {p.talkingPoints.map((tp, i) => (
+                  <div className="qa-card" key={i}>
+                    <p className="qa-q">{tp.question}</p>
+                    <p className="qa-a">{tp.answer}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="empty">No talking points were generated.</p>
+            )}
+          </Section>
+
+          <Section num="04" title="Tech stack">
+            {stackEntries.length > 0 ? (
+              <div className="stack-grid">
+                {stackEntries.map(({ key, label }) => (
+                  <div className="stack-cat" key={key}>
+                    <div className="stack-label">{label}</div>
+                    <div className="chips">
+                      {p.techStack[key].map((t, i) => (
+                        <span className="chip" key={i}>
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="empty">No tech stack was detected.</p>
+            )}
+          </Section>
+
+          <Section num="05" title="Matching job titles">
+            {p.jobTitles.length > 0 ? (
+              <div className="roles">
+                {p.jobTitles.map((j, i) => (
+                  <div className="role" key={i}>
+                    <span className="role-title">{j.title}</span>
+                    <span className="role-reason">{j.reason}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="empty">No matching roles were generated.</p>
+            )}
+          </Section>
+        </main>
+
+        <Footer />
+      </div>
+    );
+  }
+
+  // ---- Running / error view ----
+  if (phase === "running" || phase === "error") {
+    return (
+      <div className="page">
+        <section className="pipeline">
+          <div className="wrap">
+            <div className="pipeline-head">
+              <span className="eyebrow">Analyzing</span>
+              <h2>
+                <span className="target">{url.trim()}</span>
+              </h2>
+            </div>
+
+            <div className="stages">
+              {STAGES.map((s) => {
+                const state = stages[s.key];
+                return (
+                  <div className="stage" data-status={state} key={s.key}>
+                    <div className="dot">{stageGlyph(state, STAGES.indexOf(s) + 1)}</div>
+                    <div className="stage-body">
+                      <div className="stage-name">{s.name}</div>
+                      <div className="stage-desc">{details[s.key] ?? s.desc}</div>
+                    </div>
+                    <div className="stage-status">{statusLabel(state)}</div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {phase === "error" && (
+              <div className="error-card">
+                <p>{error}</p>
+                <button className="btn-ghost" onClick={reset}>
+                  Try another repo
+                </button>
+              </div>
+            )}
+          </div>
+        </section>
+        <Footer />
+      </div>
+    );
+  }
+
+  // ---- Idle / input view ----
+  return (
+    <div className="page">
+      <section className="hero">
+        <div className="wrap">
+          <div className="hero-inner">
+            <span className="eyebrow">Repo → Resume</span>
+            <h1 className="title">
+              Turn a GitHub repo into <span className="mark">resume-ready</span> proof of your work.
+            </h1>
+            <p className="subtitle">
+              Paste a repository URL. A three-agent pipeline reads the code and metadata, then writes
+              a project summary, resume bullets, interview talking points, a grouped tech stack, and
+              matching job titles.
+            </p>
+
+            <form className="form" onSubmit={onSubmit}>
+              <input
+                className="input"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://github.com/owner/repo  ·  or  owner/repo"
+                aria-label="GitHub repository URL"
+                autoFocus
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+              />
+              <button className="btn" type="submit" disabled={!url.trim()}>
+                Analyze
+              </button>
+            </form>
+
+            <div className="examples">
+              <span>Try:</span>
+              {EXAMPLES.map((ex) => (
+                <button
+                  key={ex}
+                  type="button"
+                  className="example-chip"
+                  onClick={() => {
+                    setUrl(ex);
+                    analyze(ex);
+                  }}
+                >
+                  {ex}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+      <Footer />
+    </div>
+  );
+}
+
+function Section({
+  num,
+  title,
+  children,
+}: {
+  num: string;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="section">
+      <div className="section-head">
+        <span className="section-num">{num}</span>
+        <h3>{title}</h3>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function Footer() {
+  return (
+    <footer className="footer">
+      <div className="wrap">
+        Public repos work without auth. Add a <code>GITHUB_TOKEN</code> to raise the rate limit and,
+        later, unlock private repos.
+      </div>
+    </footer>
+  );
+}
+
+function stageGlyph(state: StageState, num: number): string {
+  if (state === "done") return "✓";
+  if (state === "error") return "!";
+  return String(num);
+}
+
+function statusLabel(state: StageState): string {
+  switch (state) {
+    case "running":
+      return "Working";
+    case "done":
+      return "Done";
+    case "error":
+      return "Failed";
+    default:
+      return "Queued";
+  }
+}
+
+function formatCount(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
+  return String(n);
+}
+
+function bulletsText(result: AnalysisResult): string {
+  return result.profile.bullets.map((b) => `• ${b}`).join("\n");
+}
+
+function fullText(result: AnalysisResult): string {
+  const p = result.profile;
+  const lines: string[] = [];
+
+  lines.push("SUMMARY", p.summary || "(none)", "");
+
+  lines.push("RESUME BULLETS");
+  p.bullets.forEach((b) => lines.push(`• ${b}`));
+  lines.push("");
+
+  lines.push("INTERVIEW TALKING POINTS");
+  p.talkingPoints.forEach((tp) => {
+    lines.push(`Q: ${tp.question}`, `A: ${tp.answer}`, "");
+  });
+
+  lines.push("TECH STACK");
+  STACK_LABELS.forEach(({ key, label }) => {
+    const arr = p.techStack[key];
+    if (arr.length > 0) lines.push(`${label}: ${arr.join(", ")}`);
+  });
+  lines.push("");
+
+  lines.push("MATCHING ROLES");
+  p.jobTitles.forEach((j) => lines.push(`• ${j.title} — ${j.reason}`));
+
+  return lines.join("\n").trim();
+}
