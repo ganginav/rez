@@ -17,8 +17,9 @@ GitHub REST API and uses Claude for synthesis.
 - 🗣️ **Interview talking points** — prompts to help you speak confidently about the project.
 - 🧱 **Grouped tech stack** — languages, frameworks, and tools, organized by category.
 - 🎯 **Matching job titles** — roles the project's skills map to.
+- 📂 **Browse your own repos** — with a GitHub token set, list and pick from your repositories (public _and_ private) instead of pasting a URL.
 - 🔴 **Live pipeline progress** — per-stage status (Scout → Analyst → Writer) streamed to the UI.
-- 🔑 **Server-side keys** — your Anthropic key never reaches the browser.
+- 🔑 **Server-side keys** — your Anthropic and GitHub tokens never reach the browser.
 - 🛟 **Graceful fallbacks** — one failing stage never blanks the whole result.
 
 ## How it works
@@ -76,7 +77,7 @@ cp .env.local.example .env.local
 | Variable            | Required | Purpose                                                                 |
 | ------------------- | -------- | ----------------------------------------------------------------------- |
 | `ANTHROPIC_API_KEY` | yes      | Server-side only. Never shipped to the browser.                         |
-| `GITHUB_TOKEN`      | no       | Raises the GitHub rate limit from 60 → 5,000 req/hr.                    |
+| `GITHUB_TOKEN`      | no       | Raises the rate limit (60 → 5,000 req/hr) and, with the `repo` scope, lets you browse your repos and analyze your private ones. |
 | `ANTHROPIC_MODEL`   | no       | Overrides the model for all three agents (default `claude-sonnet-4-6`). |
 
 ### Running
@@ -99,7 +100,9 @@ npm run typecheck  # type-check without emitting
 ## Usage
 
 1. Start the app and open it in your browser.
-2. Paste a public GitHub repository URL (full URLs, `.git`, trailing paths, `owner/repo`, and SSH forms are all accepted).
+2. Pick a repository, either way:
+   - **Paste a URL** — full URLs, `.git`, trailing paths, `owner/repo`, and SSH forms are all accepted; or
+   - **Browse my repositories** — with a `GITHUB_TOKEN` set, click the toggle to list your repos (public and private), filter, and select one.
 3. Watch the **Scout → Analyst → Writer** pipeline run in real time.
 4. Copy or export the generated summary, bullets, talking points, tech stack, and job titles.
 
@@ -107,11 +110,12 @@ npm run typecheck  # type-check without emitting
 
 ```
 app/
-  page.tsx              5-section UI + pipeline indicator + copy/export
+  page.tsx              5-section UI + pipeline indicator + repo picker + copy/export
   api/analyze/route.ts  runs all three agents, streams NDJSON progress
+  api/repos/route.ts    lists the authenticated user's repos (server-side token)
 lib/
   parse.ts              URL parser (full URLs, .git, trailing paths, owner/repo, SSH)
-  github.ts             GitHub data layer (5 endpoints) + error handling
+  github.ts             GitHub data layer (6 endpoints) + error handling
   agents.ts             the three agents, file sampling, JSON-with-fallback helper
   types.ts              shared types
 ```
@@ -120,6 +124,7 @@ lib/
 
 | Purpose              | Endpoint                                                   |
 | -------------------- | ---------------------------------------------------------- |
+| Your repositories    | `GET /user/repos` (requires a token)                       |
 | Repo metadata        | `GET /repos/{owner}/{repo}`                                |
 | Language breakdown   | `GET /repos/{owner}/{repo}/languages`                      |
 | README (base64)      | `GET /repos/{owner}/{repo}/readme`                         |
@@ -136,9 +141,11 @@ lib/
 
 ## Roadmap
 
-- [ ] **Private repos via GitHub OAuth** — authorize → receive an access token → pass it as
-      `Authorization: token <token>` on every GitHub call. The pipeline is otherwise unchanged;
-      the token lives in the session only and is never persisted client-side.
+- [x] **Private repos for the host** — with a server-side `GITHUB_TOKEN` (`repo` scope), your own
+      private repositories can be browsed and analyzed today.
+- [ ] **Multi-user access via GitHub OAuth** — let each visitor sign in with their own GitHub
+      account so they can analyze _their_ private repos, instead of relying on the host's token.
+      Each visitor's access token would live in the session only and never be persisted client-side.
 
 ## License
 
